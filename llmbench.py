@@ -218,6 +218,18 @@ def t_perf(ep, model, key, timeout, lines, gen_tokens, rounds) -> dict:
     extra request.
     """
     pf, dc, dd = [], [], []
+    acc_deep, acc_shallow = [], []
+
+    def acceptance(t):
+        """Fraction of MTP/speculative draft tokens the target model accepted.
+
+        Reported separately for shallow and deep because they are not the same
+        number: a config can look lossless on a short prompt and drift at depth.
+        None on a server without speculative decoding.
+        """
+        n = t.get("draft_n")
+        return (t["draft_n_accepted"] / n) if n else None
+
     for _ in range(rounds):
         r = chat(ep, model, [{"role": "user", "content": prefill_prompt(lines)}],
                  key, timeout, max_tokens=gen_tokens, temperature=0)
@@ -228,6 +240,9 @@ def t_perf(ep, model, key, timeout, lines, gen_tokens, rounds) -> dict:
             pf.append((t["prompt_per_second"], t.get("prompt_n"), t.get("prompt_ms", 0) / 1000))
         if t.get("predicted_per_second"):
             dd.append(t["predicted_per_second"])
+        a = acceptance(t)
+        if a is not None:
+            acc_deep.append(a)
         r = chat(ep, model, [{"role": "user", "content":
                               "Write exactly 300 words about why Postgres connection "
                               "pooling matters. Plain prose, no lists."}],
@@ -237,6 +252,9 @@ def t_perf(ep, model, key, timeout, lines, gen_tokens, rounds) -> dict:
         t = timings(r)
         if t.get("predicted_per_second"):
             dc.append(t["predicted_per_second"])
+        a = acceptance(t)
+        if a is not None:
+            acc_shallow.append(a)
     if not pf or not dc:
         return {"error": "no timings returned (is this llama.cpp?)"}
     return {"prefill_tps": statistics.median(x[0] for x in pf),
@@ -244,6 +262,8 @@ def t_perf(ep, model, key, timeout, lines, gen_tokens, rounds) -> dict:
             "prefill_s": statistics.median(x[2] for x in pf),
             "decode_tps": statistics.median(dc),
             "decode_deep_tps": statistics.median(dd) if dd else None,
+            "accept_shallow": statistics.median(acc_shallow) if acc_shallow else None,
+            "accept_deep": statistics.median(acc_deep) if acc_deep else None,
             "rounds": rounds}
 
 
@@ -340,12 +360,14 @@ def t_quality(ep, model, key, timeout) -> dict:
 
 def t_longctx(ep, model, key, timeout, lines) -> dict:
     r = chat(ep, model, [{"role": "user", "content": needle_prompt(lines)}],
-             key, timeout, max_tokens=64, temperature=0)
+             key, timeout, max_tokens=1200, temperature=0)
     e = err(r)
     if e:
         return {"error": e}
     t = timings(r)
-    return {"found": NEEDLE in content_of(r),
+    c = content_of(r)
+    return {"found": NEEDLE in c,
+            "empty": not c.strip(),
             "ctx_tokens": t.get("prompt_n"),
             "prefill_tps": t.get("prompt_per_second"),
             "prefill_s": round(t.get("prompt_ms", 0) / 1000, 1)}
@@ -371,7 +393,8 @@ TESTS = {
                                     a.perf_lines, a.gen_tokens, a.rounds),
     "tools":    lambda a, m: t_tools(a.endpoint, m, a.api_key, a.timeout),
     "quality":  lambda a, m: t_quality(a.endpoint, m, a.api_key, a.timeout),
-    "longctx":  lambda a, m: t_longctx(a.endpoint, m, a.api_key, a.long_lines),
+    "longctx":  lambda a, m: t_longctx(a.endpoint, m, a.api_key, a.timeout,
+                                       a.long_lines),
     "vision":   lambda a, m: t_vision(a.endpoint, m, a.api_key, a.timeout),
 }
 DEFAULT_TESTS = ["thinking", "approval", "perf", "tools", "quality"]
@@ -381,7 +404,7 @@ DEFAULT_TESTS = ["thinking", "approval", "perf", "tools", "quality"]
 def summary_table(results: dict) -> str:
     rows, models = [], list(results)
     head = (f"{'model':<26} {'prefill':>10} {'decode':>9} {'deep':>9} "
-            f"{'tools':>6} {'quality':>8} {'think':>6} {'approval':>9}")
+            f"{'acc s/d':>12} {'tools':>6} {'quality':>8} {'think':>6} {'approval':>9}")
     rows.append(head)
     rows.append("-" * len(head))
     for m in models:
@@ -390,6 +413,9 @@ def summary_table(results: dict) -> str:
         pf = f"{p['prefill_tps']:.0f} t/s" if "prefill_tps" in p else "-"
         dc = f"{p['decode_tps']:.1f} t/s" if "decode_tps" in p else "-"
         dd = f"{p['decode_deep_tps']:.1f} t/s" if p.get("decode_deep_tps") else "-"
+        ac = ("-" if p.get("accept_shallow") is None and p.get("accept_deep") is None
+              else "/".join(f"{p[k]*100:.0f}%" if p.get(k) is not None else "-"
+                            for k in ("accept_shallow", "accept_deep")))
         tl = r.get("tools", {}).get("score", "-")
         ql = r.get("quality", {}).get("score", "-")
         tk = r.get("thinking", {})
@@ -398,7 +424,8 @@ def summary_table(results: dict) -> str:
         ap = r.get("approval", {})
         ap = ("-" if not ap else ("ERR" if "error" in ap
                                   else ("PASS" if ap.get("pass") else "EMPTY/FAIL")))
-        rows.append(f"{m:<26} {pf:>10} {dc:>9} {dd:>9} {tl:>6} {ql:>8} {th:>6} {ap:>9}")
+        rows.append(f"{m:<26} {pf:>10} {dc:>9} {dd:>9} {ac:>12} {tl:>6} {ql:>8} "
+                    f"{th:>6} {ap:>9}")
     return "\n".join(rows)
 
 
@@ -433,7 +460,8 @@ def main() -> int:
         print(f"\n### {name}", flush=True)
         if name == "perf":
             # interleave models across rounds so drift is shared, not stacked
-            per = {m: {"prefill": [], "decode": [], "deep": []} for m in a.models}
+            per = {m: {"prefill": [], "decode": [], "deep": [],
+                       "acc_s": [], "acc_d": []} for m in a.models}
             for rnd in range(a.rounds):
                 for m in a.models:
                     one = t_perf(a.endpoint, m, a.api_key, a.timeout,
@@ -446,11 +474,19 @@ def main() -> int:
                     if one.get("decode_deep_tps"):
                         per[m]["deep"].append(one["decode_deep_tps"])
                     per[m]["prompt_tokens"] = one["prompt_tokens"]
+                    for src, dst in (("accept_shallow", "acc_s"), ("accept_deep", "acc_d")):
+                        if one.get(src) is not None:
+                            per[m][dst].append(one[src])
                     deep = one.get("decode_deep_tps")
                     deep_s = f"{deep:5.1f}" if deep else "    -"
+                    acc = ""
+                    if one.get("accept_deep") is not None or one.get("accept_shallow") is not None:
+                        f = lambda v: f"{v*100:.0f}%" if v is not None else "-"
+                        acc = (f"  accept={f(one.get('accept_shallow'))}"
+                               f"/{f(one.get('accept_deep'))}")
                     print(f"  r{rnd+1} {m:<26} prefill={one['prefill_tps']:7.1f} t/s  "
                           f"decode={one['decode_tps']:5.1f} t/s  "
-                          f"deep={deep_s} t/s", flush=True)
+                          f"deep={deep_s} t/s{acc}", flush=True)
             for m in a.models:
                 if per[m]["prefill"]:
                     results[m]["perf"] = {
@@ -458,6 +494,10 @@ def main() -> int:
                         "decode_tps": statistics.median(per[m]["decode"]),
                         "decode_deep_tps": (statistics.median(per[m]["deep"])
                                             if per[m]["deep"] else None),
+                        "accept_shallow": (statistics.median(per[m]["acc_s"])
+                                           if per[m]["acc_s"] else None),
+                        "accept_deep": (statistics.median(per[m]["acc_d"])
+                                        if per[m]["acc_d"] else None),
                         "prompt_tokens": per[m].get("prompt_tokens"),
                         "rounds": a.rounds}
             continue

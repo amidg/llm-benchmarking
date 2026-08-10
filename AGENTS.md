@@ -10,8 +10,9 @@ Two stdlib-only Python scripts that benchmark and health-check LLMs behind an
 OpenAI-compatible endpoint. **No dependencies, no venv, no build step.** Python 3.10+.
 
 ```
-smoke.py      health check — tiers, aliases, vision, the one-word approval shape
-llmbench.py   comparison   — throughput, tool use, quality, long context, vision
+smoke.py        health check — tiers, aliases, vision, the one-word approval shape
+llmbench.py     comparison   — throughput, tool use, quality, long context, vision
+parallel.py     scaling    — throughput/latency under parallel load (llama.cpp vs vLLM)
 ```
 
 Both are executable and self-documenting (`--help`). Neither writes to the system; the only
@@ -41,6 +42,12 @@ side effect is loading models on the server under test.
 ./llmbench.py --models a b --tests perf --rounds 3
 ./llmbench.py --models a b --tests all --json out.json
 ./llmbench.py --models a --fail-on-regression     # exits 1 on tools/approval regression
+
+./parallel.py --models a b                        # default suite
+./parallel.py --models a b --conc-levels 1 4 16   # custom levels
+./parallel.py --models a b --interleave           # test models concurrently
+./parallel.py --models a b --tests short tools    # subset of tests
+./parallel.py --models a --fail-on-regression     # exits 1 on throughput regression
 ```
 
 Tests: `thinking`, `approval`, `perf`, `tools`, `quality`, `longctx`, `vision`, or `all`.

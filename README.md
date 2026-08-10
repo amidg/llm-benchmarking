@@ -10,6 +10,7 @@ Python 3.10+.
 |---|---|
 | `smoke.py` | fast health check of every tier and alias. Run after any config change. |
 | `llmbench.py` | compare models: throughput, tool use, quality, long context, vision. |
+| `parallel.py` | measure throughput/latency scaling under parallel load. llama.cpp vs vLLM. |
 
 ## Quick start
 
@@ -41,6 +42,48 @@ Beyond "does it respond", it checks two things that break *silently*:
   replays exactly that request.
 
 A missing embedding alias is reported as *skip*, not failure.
+
+## parallel.py
+
+```bash
+# default: short, tools, longctx (~15K tokens) at conc 1-32, 20 requests each
+./parallel.py --models model-a model-b
+
+# custom levels, fewer requests for a quick check
+./parallel.py --models a b --conc-levels 1 2 4 8 16 --requests 10
+
+# interleave mode: test models concurrently at each level (shares thermal drift)
+./parallel.py --models a b --interleave
+
+# specific test types
+./parallel.py --models a --tests short tools --gen-tokens 256
+
+# through a gateway
+./parallel.py --models local-main --endpoint http://localhost:4000/v1 \
+                --api-key "$LITELLM_MASTER_KEY"
+
+# CI gate — exits 1 if throughput at highest concurrency drops below 50%
+./parallel.py --models local-main --fail-on-regression
+```
+
+**What it measures:** throughput and latency at each concurrency level. The key
+signals that distinguish llama.cpp from vLLM:
+
+| signal | llama.cpp (threaded) | vLLM (continuous batching) |
+|---|---|---|
+| throughput peak | ~2-4× single (thread contention) | ~8-16× single (batching) |
+| throughput at high conc | declines after peak | stays flat or grows |
+| p99 latency growth | linear with concurrency | flat or slight growth |
+| TTFT growth | linear (queue wait) | flat (immediate batching) |
+| error rate at high conc | increases (overflow, OOM) | stays low until GPU saturation |
+
+Three test payloads represent common agent workflows:
+
+| test | payload | represents |
+|---|---|---|
+| `short` | ~40 token input, ~150 output | chat / summarization |
+| `tools` | ~50 token input, multi-tool call | agent function calling |
+| `longctx` | ~15K token input (80 docs), ~500+ output | RAG / retrieval workloads |
 
 ## llmbench.py
 

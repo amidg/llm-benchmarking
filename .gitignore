@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 litellm.env
 *.json
+
+# ai tools
+.opencode

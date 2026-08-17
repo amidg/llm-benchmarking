@@ -62,12 +62,18 @@ def post(endpoint: str, path: str, body: dict, api_key: str | None, timeout: int
 
 
 def chat(endpoint, model, messages, api_key, timeout, **kw) -> dict:
-    body = {"model": model, "messages": messages, **kw}
+    body = {"model": model, "messages": messages,
+            "chat_template_kwargs": {"reasoning_effort": "low"}, **kw}
     return post(endpoint, "/chat/completions", body, api_key, timeout)
 
 
 def timings(resp: dict) -> dict:
-    return resp.get("timings") or {}
+    t = resp.get("timings") or {}
+    # llama.cpp puts token counts in usage, not timings
+    usage = resp.get("usage") or {}
+    t["completion_tokens"] = usage.get("completion_tokens")
+    t["prompt_tokens"] = usage.get("prompt_tokens")
+    return t
 
 
 def err(resp: dict) -> str | None:
@@ -259,7 +265,7 @@ def _run_one_model_at_level(
     tps_per_request = [r["completion_tokens"] / r["elapsed"]
                        for r in ok if r["completion_tokens"] and r["elapsed"] > 0]
 
-    total_tokens = sum(r["completion_tokens"] for r in ok)
+    total_tokens = sum(r["completion_tokens"] for r in ok if r["completion_tokens"])
     total_time = sum(r["elapsed"] for r in ok)
     throughput = total_tokens / total_time if total_time > 0 else 0.0
 
@@ -366,7 +372,7 @@ def _run_interleaved(models, test_name, args, conc_levels) -> dict:
             tps_per_request = [r["completion_tokens"] / r["elapsed"]
                                for r in ok if r["completion_tokens"] and r["elapsed"] > 0]
 
-            total_tokens = sum(r["completion_tokens"] for r in ok)
+            total_tokens = sum(r["completion_tokens"] for r in ok if r["completion_tokens"])
             total_time = sum(r["elapsed"] for r in ok)
             throughput = total_tokens / total_time if total_time > 0 else 0.0
 

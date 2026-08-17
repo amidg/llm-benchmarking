@@ -63,7 +63,9 @@ def post(endpoint: str, path: str, body: dict, api_key: str | None, timeout: int
 
 
 def chat(endpoint, model, messages, api_key, timeout, **kw) -> dict:
-    body = {"model": model, "messages": messages, **kw}
+    # Qwen3.8 defaults to thinking; use chat_template_kwargs to suppress it
+    body = {"model": model, "messages": messages,
+            "chat_template_kwargs": {"reasoning_effort": "low"}, **kw}
     return post(endpoint, "/chat/completions", body, api_key, timeout)
 
 

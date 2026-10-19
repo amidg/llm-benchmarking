@@ -53,6 +53,13 @@ side effect is loading models on the server under test.
 Tests: `thinking`, `approval`, `perf`, `tools`, `quality`, `longctx`, `vision`, or `all`.
 Default suite is `thinking approval perf tools quality`.
 
+**`approval` sends top-level `reasoning_effort: "none"` on purpose.** Every other test
+carries `chat_template_kwargs: {"reasoning_effort": "low"}`, which is a no-op on models
+without an effort ladder (Gemma 4: `low`/`medium`/`high` all mean "on"). The approval shape
+is `max_tokens=16` and Hermes' `auxiliary.approval` role sends `none`, so the probe must
+replay exactly that or it flags a working model as broken. `none` is applied last by
+llama.cpp and overrides the `chat_template_kwargs` value.
+
 Flags that matter: `--endpoint`, `--api-key`, `--rounds`, `--perf-lines`, `--long-lines`,
 `--gen-tokens`, `--timeout`, `--json`.
 

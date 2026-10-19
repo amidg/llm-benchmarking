@@ -32,7 +32,7 @@ TIERS = {
 GATEWAY = "http://localhost:4000/v1"
 # Aliases every machine should define. local-embed is laptop-only by design —
 # the desktop has no embedding GGUF, so its absence there is expected, not a bug.
-CHAT_ALIASES = ["local-main", "local-vision", "local-tiny"]
+CHAT_ALIASES = ["server-qwen38-27b", "gemma-4-26b-a4b"]
 EMBED_ALIASES = ["local-embed"]
 
 PNG_1PX = ("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhK"
@@ -161,22 +161,23 @@ def main() -> int:
 
         print("\n== vision ==")
         data, e = req(GATEWAY + "/chat/completions",
-                      {"model": "local-vision", "max_tokens": 400,
+                      {"model": "server-qwen38-27b", "max_tokens": 400,
                        "messages": [{"role": "user", "content": [
                            {"type": "text", "text": "What colour is this? One word."},
                            {"type": "image_url",
                             "image_url": {"url": f"data:image/png;base64,{PNG_1PX}"}}]}]},
                       key, a.timeout)
         if e or not data or "error" in (data or {}):
-            bad(f"local-vision rejected an image: {e or str(data.get('error'))[:70]}")
+            bad(f"server-qwen38-27b rejected an image: {e or str(data.get('error'))[:70]}")
             failures += 1
         else:
-            ok(f"local-vision accepted an image -> "
+            ok(f"server-qwen38-27b accepted an image -> "
                f"{(data['choices'][0]['message'].get('content') or '')[:30]!r}")
 
         print("\n== approval shape (max_tokens=16, must return one word) ==")
         data, e = req(GATEWAY + "/chat/completions",
-                      {"model": "local-tiny", "max_tokens": 16, "temperature": 0,
+                      {"model": "gemma-4-26b-a4b", "max_tokens": 16, "temperature": 0,
+                       "reasoning_effort": "none",
                        "messages": [
                            {"role": "system", "content": "You assess shell command risk."},
                            {"role": "user", "content":
@@ -189,9 +190,9 @@ def main() -> int:
         else:
             c = (data["choices"][0]["message"].get("content") or "").strip().upper()
             if c in ("APPROVE", "DENY", "ESCALATE"):
-                ok(f"local-tiny returned {c!r} within 16 tokens")
+                ok(f"gemma-4-26b-a4b returned {c!r} within 16 tokens")
             else:
-                bad(f"local-tiny returned {c!r} — a thinking model will return empty "
+                bad(f"gemma-4-26b-a4b returned {c!r} — a thinking model will return empty "
                     "here and silently break Hermes smart-approval")
                 failures += 1
 

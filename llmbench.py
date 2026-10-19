@@ -184,7 +184,13 @@ def t_thinking(ep, model, key, timeout) -> dict:
 def t_approval_shape(ep, model, key, timeout) -> dict:
     """Hermes' smart-approval shape: max_tokens=16, expects one word.
 
-    A thinking model returns EMPTY here. This is the check that caught the bug.
+    Sends the top-level `reasoning_effort: "none"` that Hermes'
+    `auxiliary.approval` role sends; llama.cpp applies the top-level field last,
+    after (and overriding) the `chat_template_kwargs` effort every other test
+    uses. Without it a thinking model spends the whole budget on reasoning and
+    returns EMPTY — the bug this check exists to catch. Gemma 4 has no effort
+    ladder, so `low` in chat_template_kwargs is a no-op there and only `none`
+    turns thinking off.
     """
     r = chat(ep, model, [
         {"role": "system", "content": "You assess shell command risk."},
@@ -192,7 +198,7 @@ def t_approval_shape(ep, model, key, timeout) -> dict:
             "The following command was flagged as: script execution via -c flag\n\n"
             "<command>\npython -c \"print('hello')\"\n</command>\n\n"
             "Respond with exactly one word: APPROVE, DENY, or ESCALATE"}],
-        key, timeout, max_tokens=16, temperature=0)
+        key, timeout, max_tokens=16, temperature=0, reasoning_effort="none")
     e = err(r)
     if e:
         return {"error": e}

@@ -3,7 +3,11 @@
 
     ./smoke.py                     # check every tier + every alias
     ./smoke.py --quick             # skip generation, just list what is loaded
-    ./smoke.py --endpoint-only     # skip LiteLLM, check llama-swap directly
+    ./smoke.py --endpoint-only     # skip LiteLLM, check the inference server directly
+    ./smoke.py --profile desktop   # force the desktop layout (:8080, Strata)
+
+The machine layout is picked automatically by probing the tier ports (:8081 for the
+laptop, then :8080 for the desktop); override with --profile.
 
 Run after any config change, container restart, or model swap. Takes ~1-2 minutes
 warm, longer if models need loading.
@@ -25,14 +29,33 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-TIERS = {
-    "primary GPU  (:8081)": "http://localhost:8081/v1",
-    "secondary GPU(:8082)": "http://localhost:8082/v1",
-}
 GATEWAY = "http://localhost:4000/v1"
-# Aliases every machine should define. local-embed is laptop-only by design —
-# the desktop has no embedding GGUF, so its absence there is expected, not a bug.
-CHAT_ALIASES = ["server-qwen38-27b", "gemma-4-26b-a4b"]
+
+# Per-machine layouts. smoke.py runs on both boxes and they share nothing but the
+# gateway port: the laptop runs llama-swap across :8081/:8082 with several aliases,
+# the desktop runs one resident Strata process on :8080 serving a single name.
+# `--profile auto` picks by probing the tier ports (:8081 first, then :8080).
+PROFILES = {
+    "laptop": {
+        "tiers": {
+            "primary GPU  (:8081)": "http://localhost:8081/v1",
+            "secondary GPU(:8082)": "http://localhost:8082/v1",
+        },
+        "chat": ["server-qwen38-27b", "gemma-4-26b-a4b"],
+        "vision": "server-qwen38-27b",
+        "approval": "gemma-4-26b-a4b",
+    },
+    "desktop": {
+        "tiers": {
+            "Strata (5070 Ti, :8080)": "http://localhost:8080/v1",
+        },
+        "chat": ["qwen3.8-flash-next"],
+        "vision": "qwen3.8-flash-next",
+        "approval": "qwen3.8-flash-next",
+    },
+}
+# local-embed is laptop-only by design — the desktop has no embedding GGUF, so
+# its absence there is reported as skip, not failure.
 EMBED_ALIASES = ["local-embed"]
 
 PNG_1PX = ("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhK"
@@ -86,6 +109,18 @@ def req(url: str, body: dict | None, key: str | None, timeout: int):
         return None, f"{type(e).__name__}: {e}"
 
 
+def pick_profile(name: str) -> str:
+    """Resolve --profile auto to a concrete profile by probing the tier ports."""
+    if name != "auto":
+        return name
+    for candidate in ("laptop", "desktop"):
+        first = next(iter(PROFILES[candidate]["tiers"].values()))
+        data, e = req(first + "/models", None, None, 3)
+        if not e and data:
+            return candidate
+    return "laptop"  # nothing is up; report the familiar layout
+
+
 def ok(msg):
     print(f"  \033[32mok\033[0m   {msg}")
 
@@ -99,13 +134,18 @@ def main() -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--quick", action="store_true", help="skip generation calls")
     ap.add_argument("--endpoint-only", action="store_true", help="skip the LiteLLM gateway")
+    ap.add_argument("--profile", choices=["auto", "laptop", "desktop"], default="auto",
+                    help="machine layout; auto probes :8081 then :8080")
     ap.add_argument("--timeout", type=int, default=900)
     a = ap.parse_args()
     failures = 0
 
-    print("\n== llama-swap tiers ==")
+    profile = pick_profile(a.profile)
+    prof = PROFILES[profile]
+
+    print(f"\n== inference tiers ({profile}) ==")
     live = {}
-    for label, ep in TIERS.items():
+    for label, ep in prof["tiers"].items():
         data, e = req(ep + "/models", None, None, 15)
         if e or not data:
             bad(f"{label} unreachable ({e})")
@@ -130,7 +170,7 @@ def main() -> int:
             return 1
 
         print("\n== gateway aliases ==")
-        for alias in CHAT_ALIASES:
+        for alias in prof["chat"]:
             t0 = time.time()
             data, e = req(GATEWAY + "/chat/completions",
                           {"model": alias,
@@ -161,22 +201,22 @@ def main() -> int:
 
         print("\n== vision ==")
         data, e = req(GATEWAY + "/chat/completions",
-                      {"model": "server-qwen38-27b", "max_tokens": 400,
+                      {"model": prof["vision"], "max_tokens": 400,
                        "messages": [{"role": "user", "content": [
                            {"type": "text", "text": "What colour is this? One word."},
                            {"type": "image_url",
                             "image_url": {"url": f"data:image/png;base64,{PNG_1PX}"}}]}]},
                       key, a.timeout)
         if e or not data or "error" in (data or {}):
-            bad(f"server-qwen38-27b rejected an image: {e or str(data.get('error'))[:70]}")
+            bad(f"{prof['vision']} rejected an image: {e or str(data.get('error'))[:70]}")
             failures += 1
         else:
-            ok(f"server-qwen38-27b accepted an image -> "
+            ok(f"{prof['vision']} accepted an image -> "
                f"{(data['choices'][0]['message'].get('content') or '')[:30]!r}")
 
         print("\n== approval shape (max_tokens=16, must return one word) ==")
         data, e = req(GATEWAY + "/chat/completions",
-                      {"model": "gemma-4-26b-a4b", "max_tokens": 16, "temperature": 0,
+                      {"model": prof["approval"], "max_tokens": 16, "temperature": 0,
                        "reasoning_effort": "none",
                        "messages": [
                            {"role": "system", "content": "You assess shell command risk."},
@@ -190,9 +230,9 @@ def main() -> int:
         else:
             c = (data["choices"][0]["message"].get("content") or "").strip().upper()
             if c in ("APPROVE", "DENY", "ESCALATE"):
-                ok(f"gemma-4-26b-a4b returned {c!r} within 16 tokens")
+                ok(f"{prof['approval']} returned {c!r} within 16 tokens")
             else:
-                bad(f"gemma-4-26b-a4b returned {c!r} — a thinking model will return empty "
+                bad(f"{prof['approval']} returned {c!r} — a thinking model will return empty "
                     "here and silently break Hermes smart-approval")
                 failures += 1
 

@@ -81,9 +81,10 @@ Defaults are `localhost:8081` / `:8082` (inference tiers) and `localhost:4000` (
 If the key is missing, `smoke.py` fails fast with a clear message — that is not a stack
 failure.
 
-Alias names (`local-main`, `local-vision`, `local-tiny`, `local-embed`) are hardcoded in
-`CHAT_ALIASES` / `EMBED_ALIASES` at the top of `smoke.py`. Edit those for a different
-scheme. A missing embedding alias reports *skip*, not failure.
+Alias names and tier ports are per-machine in `PROFILES` at the top of `smoke.py`
+(`laptop`: llama-swap on :8081/:8082; `desktop`: Strata on :8080). `--profile
+auto|laptop|desktop` selects one — auto probes the tier ports and defaults to
+`laptop` when nothing is up. Edit `PROFILES` for a different scheme.
 
 ## Interpreting results — the traps
 

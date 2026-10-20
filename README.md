@@ -3,7 +3,7 @@
 Benchmark and health-check local LLMs behind any OpenAI-compatible endpoint —
 llama.cpp / llama-swap, LiteLLM, Ollama, vLLM, or a hosted API.
 
-Two stdlib-only Python scripts. **No `pip install`, no venv, no dependencies.**
+Four stdlib-only Python scripts. **No `pip install`, no venv, no dependencies.**
 Python 3.10+.
 
 | script | what it does |
@@ -11,6 +11,7 @@ Python 3.10+.
 | `smoke.py` | fast health check of every tier and alias. Run after any config change. |
 | `llmbench.py` | compare models: throughput, tool use, quality, long context, vision. |
 | `parallel.py` | measure throughput/latency scaling under parallel load. llama.cpp vs vLLM. |
+| `coding.py` | coding arm: five small tasks with hidden tests, scored on first-attempt success. |
 
 ## Quick start
 
@@ -84,6 +85,46 @@ Three test payloads represent common agent workflows:
 | `short` | ~40 token input, ~150 output | chat / summarization |
 | `tools` | ~50 token input, multi-tool call | agent function calling |
 | `longctx` | ~15K token input (80 docs), ~500+ output | RAG / retrieval workloads |
+
+## coding.py
+
+```bash
+# all five tasks, one model
+./coding.py --models tiel-coder-35b-a3b-ud-q3_k_xl
+
+# two models, interleaved task by task (shared thermal drift)
+./coding.py --models a b --endpoint http://localhost:8080/v1
+
+# one task, or a subset
+./coding.py --models a --only lru_cache parse_duration
+
+# machine-readable results; CI gate on any failure
+./coding.py --models a b --json coding.json --fail-on-failure
+```
+
+**What it measures:** whether a model can produce a working Python file, not just a
+plausible answer. Each task ships a prompt and a hidden `unittest` suite the model never
+sees; the file is executed after each attempt, and on failure the model gets the test
+output and up to `--repair-attempts` (default 3) more tries.
+
+| task | what it checks |
+|---|---|
+| `stats_bugfix` | two bugs in `mean`/`median` (integer division, even-length index) |
+| `merge_intervals` | sorting, touching, nested and unsorted intervals |
+| `parse_duration` | strict `1h30m15s` parsing, invalid input must raise `ValueError` |
+| `csv_bugfix` | quoted fields, commas inside quotes, `""` escapes |
+| `lru_cache` | O(1) LRU with capacity 0, MRU-on-update, no evict on update |
+
+The summary reports **pass@1, total pass, wall time and completion tokens** per model.
+Quality is the score; time and tokens are reported beside it because that is what an
+agent pays per turn — Tiel and Qwen3.6 both scored 5/5, but Tiel took 71 s / 4.3k tokens
+against 338 s / 25.9k. Because the suite saturates, a tie means "no evidence of a quality
+difference", not "equal on real agentic work". Add harder tasks before treating a win as
+meaningful.
+
+```bash
+./coding.py --models a --only lru_cache --repair-attempts 1   # first-attempt only
+```
 
 ## llmbench.py
 

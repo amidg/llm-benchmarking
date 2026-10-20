@@ -6,16 +6,17 @@ wrong conclusions from them.
 
 ## What this repo is
 
-Two stdlib-only Python scripts that benchmark and health-check LLMs behind an
+Four stdlib-only Python scripts that benchmark and health-check LLMs behind an
 OpenAI-compatible endpoint. **No dependencies, no venv, no build step.** Python 3.10+.
 
 ```
 smoke.py        health check — tiers, aliases, vision, the one-word approval shape
 llmbench.py     comparison   — throughput, tool use, quality, long context, vision
 parallel.py     scaling    — throughput/latency under parallel load (llama.cpp vs vLLM)
+coding.py       coding arm  — hidden-test tasks; pass@1, wall time, completion tokens
 ```
 
-Both are executable and self-documenting (`--help`). Neither writes to the system; the only
+All are executable and self-documenting (`--help`). None write to the system; the only
 side effect is loading models on the server under test.
 
 ## Rules
@@ -48,6 +49,11 @@ side effect is loading models on the server under test.
 ./parallel.py --models a b --interleave           # test models concurrently
 ./parallel.py --models a b --tests short tools    # subset of tests
 ./parallel.py --models a --fail-on-regression     # exits 1 on throughput regression
+
+./coding.py --models a b                          # five hidden-test coding tasks
+./coding.py --models a b --only lru_cache         # one task
+./coding.py --models a b --json coding.json       # pass@1, time, tokens per task
+./coding.py --models a --fail-on-failure          # exits 1 if any task fails
 ```
 
 Tests: `thinking`, `approval`, `perf`, `tools`, `quality`, `longctx`, `vision`, or `all`.
@@ -131,6 +137,17 @@ before concluding a regression, and probe the specific case directly.
 
 If you are tuning CPU-side settings (threads, affinity, memory placement), prefill will
 barely move while decode does. Do not tune on a prefill number.
+
+### `coding.py` scores one axis, and it saturates
+
+The five tasks are small on purpose: one file, one hidden suite, runnable on an 8 GB card.
+Both Tiel and Qwen3.6 passed **5/5 first try**, so the score separated nothing — the useful
+signal was cost: 71 s / 4.3k completion tokens vs 338 s / 25.9k. **Always report time and
+tokens with pass@1**, and read a tie as "no evidence of a quality difference", not as
+equality on multi-file agentic work. Repairs are allowed (default 3) because the loop needs
+the failing test output; `--repair-attempts 1` measures first-shot quality only. Keep
+`temperature=0` and a large `max_tokens` here too — a thinking model that loses its file to
+a budget cap scores as a wrong answer.
 
 ## Adding a test
 
